@@ -1,0 +1,912 @@
+#include <SFML/Graphics.hpp>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <cstdlib>
+#include <ctime>
+#include <algorithm>
+#include <memory>
+
+// Definición de constantes
+const int WINDOW_WIDTH = 1024;
+const int WINDOW_HEIGHT = 768;
+const int CELL_SIZE = 80;
+const int BOARD_OFFSET_X = 200;
+const int BOARD_OFFSET_Y = 150;
+const float ANIMATION_SPEED = 5.0f;
+
+// Enumeraciones
+enum class GameState {
+    MENU,
+    INSTRUCTIONS,
+    PLAYER_SETUP,
+    GAME,
+    PAUSE,
+    GAME_OVER
+};
+
+enum class PlayerType {
+    HUMAN,
+    AI
+};
+
+// Estructura para jugadores
+struct Player {
+    std::string name;
+    int x, y;
+    bool hasBall;
+    int energy;
+    int team; // 1 o 2
+    sf::Color color;
+    sf::CircleShape shape;
+    
+    Player(std::string _name, int _x, int _y, bool _hasBall, int _team, sf::Color _color) : 
+        name(_name), x(_x), y(_y), hasBall(_hasBall), energy(3), team(_team), color(_color) {
+        shape.setRadius(CELL_SIZE / 2 - 5);
+        shape.setFillColor(_color);
+        shape.setOutlineColor(sf::Color::White);
+        shape.setOutlineThickness(2);
+        shape.setOrigin(shape.getRadius(), shape.getRadius());
+        updatePosition();
+    }
+    
+    void updatePosition() {
+        float posX = BOARD_OFFSET_X + (y + 0.5f + (x % 2) * 0.5f) * CELL_SIZE;
+        float posY = BOARD_OFFSET_Y + (x + 0.5f) * CELL_SIZE;
+        shape.setPosition(posX, posY);
+    }
+};
+
+// Estructura para las cartas
+struct Card {
+    std::string name;
+    std::string description;
+    int energyCost;
+    sf::Texture texture;
+    sf::Sprite sprite;
+    
+    Card(std::string _name, std::string _desc, int _cost) : 
+        name(_name), description(_desc), energyCost(_cost) {}
+        
+    void setPosition(float x, float y) {
+        sprite.setPosition(x, y);
+    }
+    
+    bool contains(float x, float y) const {
+        return sprite.getGlobalBounds().contains(x, y);
+    }
+    
+    void draw(sf::RenderWindow& window) {
+        window.draw(sprite);
+    }
+};
+
+// Clase principal del juego
+class FutbolTotal {
+private:
+    sf::RenderWindow window;
+    sf::Font font;
+    GameState currentState;
+    
+    // Tablero hexagonal
+    static const int rows = 7, cols = 5;
+    std::vector<std::vector<sf::CircleShape>> board;
+    
+    // Jugadores
+    std::vector<Player> players;
+    int activePlayerIndex;
+    int currentTeam; // 1 o 2
+    
+    // Cartas
+    std::vector<Card> allCards;
+    std::vector<std::vector<int>> playerCards; // Cartas por jugador
+    
+    // Interfaz
+    sf::Texture backgroundTexture;
+    sf::Sprite backgroundSprite;
+    sf::Text titleText;
+    std::vector<sf::Text> menuOptions;
+    sf::Text statusText;
+    sf::Text scoreText;
+    
+    // Estadísticas del juego
+    int goalsTeam1;
+    int goalsTeam2;
+    int turnCount;
+    bool gameEnded;
+    
+    // Variables para el movimiento
+    bool isSelectingMove;
+    bool isSelectingCard;
+    std::vector<sf::CircleShape> possibleMoves;
+    
+    // Botones
+    sf::RectangleShape pauseButton;
+    sf::Text pauseText;
+    
+    // Animación
+    bool isAnimating;
+    sf::Clock animationClock;
+    
+public:
+    FutbolTotal() : 
+        window(sf::VideoMode(WINDOW_WIDTH, WINDOW_HEIGHT), "Fútbol Total: El Desafío de Hugo"),
+        currentState(GameState::MENU),
+        activePlayerIndex(0),
+        currentTeam(1),
+        goalsTeam1(0),
+        goalsTeam2(0),
+        turnCount(0),
+        gameEnded(false),
+        isSelectingMove(false),
+        isSelectingCard(false),
+        isAnimating(false) {
+        
+        // Inicializar recursos
+        initResources();
+        
+        // Inicializar el tablero
+        initBoard();
+        
+        // Inicializar cartas
+        initCards();
+        
+        // Inicializar interfaz
+        initInterface();
+        
+        // Fijar FPS
+        window.setFramerateLimit(60);
+    }
+    
+    void run() {
+        while (window.isOpen()) {
+            processEvents();
+            update();
+            render();
+        }
+    }
+    
+private:
+    void initResources() {
+        // Cargar fuente
+        if (!font.loadFromFile("resources/fonts/arial.ttf")) {
+            std::cerr << "Error loading font" << std::endl;
+        }
+        
+        // Cargar fondo
+        if (!backgroundTexture.loadFromFile("resources/images/soccer_field.jpg")) {
+            std::cerr << "Error loading background" << std::endl;
+            backgroundTexture.create(WINDOW_WIDTH, WINDOW_HEIGHT);
+        }
+        backgroundSprite.setTexture(backgroundTexture);
+        backgroundSprite.setScale(
+            WINDOW_WIDTH / backgroundSprite.getGlobalBounds().width,
+            WINDOW_HEIGHT / backgroundSprite.getGlobalBounds().height
+        );
+        
+        // Inicializar generador de números aleatorios
+        std::srand(static_cast<unsigned int>(std::time(nullptr)));
+    }
+    
+    void initBoard() {
+        board.resize(rows);
+        for (int i = 0; i < rows; ++i) {
+            board[i].resize(cols);
+            for (int j = 0; j < cols; ++j) {
+                board[i][j].setRadius(CELL_SIZE / 2 - 2);
+                board[i][j].setFillColor(sf::Color(200, 230, 200, 150));
+                board[i][j].setOutlineColor(sf::Color::White);
+                board[i][j].setOutlineThickness(1);
+                
+                // Posición para un tablero de hexágonos desplazados
+                float posX = BOARD_OFFSET_X + (j + 0.5f + (i % 2) * 0.5f) * CELL_SIZE;
+                float posY = BOARD_OFFSET_Y + (i + 0.5f) * CELL_SIZE;
+                
+                board[i][j].setOrigin(board[i][j].getRadius(), board[i][j].getRadius());
+                board[i][j].setPosition(posX, posY);
+            }
+        }
+    }
+    
+    void initCards() {
+        // Definir todas las cartas del juego
+        allCards = {
+            Card("Tiro Potente", "Aumenta probabilidad de gol", 2),
+            Card("Atajada Épica", "Mayor defensa del portero", 2),
+            Card("Drible Maestro", "Evita que te roben el balón", 1),
+            Card("Pase Largo", "Mueve el balón a un compañero lejano", 1),
+            Card("Contraataque", "Mueve dos casillas adicionales", 2),
+            Card("Barrera Defensiva", "Bloquea un camino de ataque", 1)
+        };
+        
+        // Asignar texturas a las cartas (ejemplo)
+        for (size_t i = 0; i < allCards.size(); ++i) {
+            sf::Texture texture;
+            // Aquí cargarías la textura desde un archivo
+            // texture.loadFromFile("resources/cards/card" + std::to_string(i) + ".png");
+            
+            // Creamos una textura temporal para el ejemplo
+            texture.create(100, 150);
+            allCards[i].texture = texture;
+            allCards[i].sprite.setTexture(allCards[i].texture);
+            allCards[i].sprite.setScale(0.7f, 0.7f);
+        }
+    }
+    
+    void initInterface() {
+        // Título
+        titleText.setFont(font);
+        titleText.setString("Fútbol Total: El Desafío de Hugo");
+        titleText.setCharacterSize(48);
+        titleText.setFillColor(sf::Color::White);
+        titleText.setStyle(sf::Text::Bold);
+        titleText.setPosition(
+            WINDOW_WIDTH / 2 - titleText.getGlobalBounds().width / 2,
+            50
+        );
+        
+        // Opciones del menú
+        std::vector<std::string> options = {"Nuevo Juego", "Instrucciones", "Opciones", "Salir"};
+        menuOptions.resize(options.size());
+        for (size_t i = 0; i < options.size(); ++i) {
+            menuOptions[i].setFont(font);
+            menuOptions[i].setString(options[i]);
+            menuOptions[i].setCharacterSize(36);
+            menuOptions[i].setFillColor(sf::Color::White);
+            menuOptions[i].setPosition(
+                WINDOW_WIDTH / 2 - menuOptions[i].getGlobalBounds().width / 2,
+                250 + i * 80
+            );
+        }
+        
+        // Texto de estado
+        statusText.setFont(font);
+        statusText.setCharacterSize(24);
+        statusText.setFillColor(sf::Color::White);
+        statusText.setPosition(20, WINDOW_HEIGHT - 60);
+        
+        // Texto de puntuación
+        scoreText.setFont(font);
+        scoreText.setCharacterSize(36);
+        scoreText.setFillColor(sf::Color::Yellow);
+        scoreText.setPosition(WINDOW_WIDTH - 200, 20);
+        
+        // Botón de pausa
+        pauseButton.setSize(sf::Vector2f(120, 40));
+        pauseButton.setFillColor(sf::Color(100, 100, 100, 200));
+        pauseButton.setPosition(WINDOW_WIDTH - 140, 80);
+        
+        pauseText.setFont(font);
+        pauseText.setString("Pausa");
+        pauseText.setCharacterSize(20);
+        pauseText.setFillColor(sf::Color::White);
+        pauseText.setPosition(
+            pauseButton.getPosition().x + pauseButton.getSize().x / 2 - pauseText.getGlobalBounds().width / 2,
+            pauseButton.getPosition().y + pauseButton.getSize().y / 2 - pauseText.getGlobalBounds().height / 2 - 5
+        );
+    }
+    
+    void startNewGame() {
+        // Reiniciar variables del juego
+        players.clear();
+        playerCards.clear();
+        turnCount = 0;
+        goalsTeam1 = 0;
+        goalsTeam2 = 0;
+        gameEnded = false;
+        currentTeam = 1;
+        
+        // Crear jugadores
+        // Equipo 1 (Rojo)
+        players.push_back(Player("Delantero1", 3, 0, true, 1, sf::Color::Red));
+        players.push_back(Player("Portero1", 3, 1, false, 1, sf::Color(200, 0, 0)));
+        
+        // Equipo 2 (Azul)
+        players.push_back(Player("Delantero2", 3, 4, false, 2, sf::Color::Blue));
+        players.push_back(Player("Portero2", 3, 3, false, 2, sf::Color(0, 0, 200)));
+        
+        // Distribuir cartas iniciales
+        playerCards.resize(players.size());
+        for (size_t i = 0; i < players.size(); ++i) {
+            // Cada jugador recibe 3 cartas aleatorias
+            for (int j = 0; j < 3; ++j) {
+                playerCards[i].push_back(rand() % allCards.size());
+            }
+        }
+        
+        // Establecer jugador activo y estado de juego
+        activePlayerIndex = 0; // Empezamos con el delantero del equipo 1
+        currentState = GameState::GAME;
+        
+        // Actualizar texto de estado
+        updateStatusText();
+    }
+    
+    void processEvents() {
+        sf::Event event;
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) {
+                window.close();
+            }
+            else if (event.type == sf::Event::KeyPressed) {
+                handleKeyPress(event.key.code);
+            }
+            else if (event.type == sf::Event::MouseButtonPressed) {
+                handleMouseClick(event.mouseButton.x, event.mouseButton.y);
+            }
+            else if (event.type == sf::Event::MouseMoved) {
+                handleMouseMove(event.mouseMove.x, event.mouseMove.y);
+            }
+        }
+    }
+    
+    void handleKeyPress(sf::Keyboard::Key key) {
+        if (key == sf::Keyboard::Escape) {
+            if (currentState == GameState::GAME) {
+                currentState = GameState::PAUSE;
+            } else if (currentState == GameState::PAUSE) {
+                currentState = GameState::GAME;
+            }
+        }
+    }
+    
+    void handleMouseClick(int x, int y) {
+        switch (currentState) {
+            case GameState::MENU:
+                handleMenuClick(x, y);
+                break;
+                
+            case GameState::INSTRUCTIONS:
+                // Volver al menú al hacer clic
+                currentState = GameState::MENU;
+                break;
+                
+            case GameState::GAME:
+                handleGameClick(x, y);
+                break;
+                
+            case GameState::PAUSE:
+                handlePauseClick(x, y);
+                break;
+                
+            case GameState::GAME_OVER:
+                // Volver al menú al hacer clic
+                currentState = GameState::MENU;
+                break;
+                
+            default:
+                break;
+        }
+    }
+    
+    void handleMouseMove(int x, int y) {
+        // Resaltar opciones del menú
+        if (currentState == GameState::MENU) {
+            for (auto& option : menuOptions) {
+                if (option.getGlobalBounds().contains(static_cast<float>(x), static_cast<float>(y))) {
+                    option.setFillColor(sf::Color::Yellow);
+                } else {
+                    option.setFillColor(sf::Color::White);
+                }
+            }
+        }
+        
+        // Resaltar casillas de movimiento posible
+        if (currentState == GameState::GAME && isSelectingMove) {
+            for (auto& move : possibleMoves) {
+                if (move.getGlobalBounds().contains(static_cast<float>(x), static_cast<float>(y))) {
+                    move.setFillColor(sf::Color(255, 255, 100, 150));
+                } else {
+                    move.setFillColor(sf::Color(100, 255, 100, 150));
+                }
+            }
+        }
+    }
+    
+    void handleMenuClick(int x, int y) {
+        for (size_t i = 0; i < menuOptions.size(); ++i) {
+            if (menuOptions[i].getGlobalBounds().contains(static_cast<float>(x), static_cast<float>(y))) {
+                switch (i) {
+                    case 0: // Nuevo Juego
+                        startNewGame();
+                        break;
+                    case 1: // Instrucciones
+                        currentState = GameState::INSTRUCTIONS;
+                        break;
+                    case 2: // Opciones
+                        // TODO: Implementar pantalla de opciones
+                        break;
+                    case 3: // Salir
+                        window.close();
+                        break;
+                }
+                break;
+            }
+        }
+    }
+    
+    void handleGameClick(int x, int y) {
+        // Verificar clic en botón de pausa
+        if (pauseButton.getGlobalBounds().contains(static_cast<float>(x), static_cast<float>(y))) {
+            currentState = GameState::PAUSE;
+            return;
+        }
+        
+        if (isAnimating) return; // No permitir interacción durante animaciones
+        
+        if (isSelectingMove) {
+            // Verificar si se hizo clic en una posición válida
+            for (size_t i = 0; i < possibleMoves.size(); ++i) {
+                if (possibleMoves[i].getGlobalBounds().contains(static_cast<float>(x), static_cast<float>(y))) {
+                    // Encontrar coordenadas del tablero
+                    int targetRow = -1, targetCol = -1;
+                    for (int r = 0; r < rows; ++r) {
+                        for (int c = 0; c < cols; ++c) {
+                            if (board[r][c].getPosition() == possibleMoves[i].getPosition()) {
+                                targetRow = r;
+                                targetCol = c;
+                                break;
+                            }
+                        }
+                        if (targetRow != -1) break;
+                    }
+                    
+                    if (targetRow != -1 && targetCol != -1) {
+                        movePlayer(activePlayerIndex, targetRow, targetCol);
+                    }
+                    break;
+                }
+            }
+        } else if (isSelectingCard) {
+            // TODO: Implementar lógica para selección de cartas
+        } else {
+            // Verificar si se hizo clic en un jugador del equipo actual
+            for (size_t i = 0; i < players.size(); ++i) {
+                if (players[i].team == currentTeam && 
+                    players[i].shape.getGlobalBounds().contains(static_cast<float>(x), static_cast<float>(y))) {
+                    
+                    activePlayerIndex = i;
+                    showPossibleMoves();
+                    break;
+                }
+            }
+        }
+    }
+    
+    void handlePauseClick(int x, int y) {
+        // TODO: Implementar menú de pausa
+        currentState = GameState::GAME;
+    }
+    
+    void showPossibleMoves() {
+        isSelectingMove = true;
+        possibleMoves.clear();
+        
+        Player& player = players[activePlayerIndex];
+        
+        // En un juego real, calcularías movimientos válidos según las reglas
+        // Aquí simplificamos mostrando casillas adyacentes
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                if (dx == 0 && dy == 0) continue;
+                
+                int newRow = player.x + dx;
+                int newCol = player.y + dy;
+                
+                // Verificar límites del tablero
+                if (newRow >= 0 && newRow < rows && newCol >= 0 && newCol < cols) {
+                    // Verificar si la casilla está ocupada
+                    bool occupied = false;
+                    for (const auto& p : players) {
+                        if (p.x == newRow && p.y == newCol) {
+                            occupied = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!occupied) {
+                        sf::CircleShape moveMarker = board[newRow][newCol];
+                        moveMarker.setFillColor(sf::Color(100, 255, 100, 150));
+                        possibleMoves.push_back(moveMarker);
+                    }
+                }
+            }
+        }
+    }
+    
+    void movePlayer(int playerIndex, int newRow, int newCol) {
+        Player& player = players[playerIndex];
+        
+        // Guardar posición anterior para animación
+        sf::Vector2f startPos = player.shape.getPosition();
+        
+        // Actualizar coordenadas lógicas
+        player.x = newRow;
+        player.y = newCol;
+        
+        // Calcular nueva posición visual
+        float posX = BOARD_OFFSET_X + (player.y + 0.5f + (player.x % 2) * 0.5f) * CELL_SIZE;
+        float posY = BOARD_OFFSET_Y + (player.x + 0.5f) * CELL_SIZE;
+        sf::Vector2f endPos(posX, posY);
+        
+        // Iniciar animación de movimiento
+        isAnimating = true;
+        isSelectingMove = false;
+        animationClock.restart();
+        
+        // Función lambda para la animación
+        auto animateMovement = [this, startPos, endPos, playerIndex]() {
+            float elapsed = animationClock.getElapsedTime().asSeconds();
+            float progress = std::min(elapsed * ANIMATION_SPEED, 1.0f);
+            
+            sf::Vector2f currentPos = startPos + (endPos - startPos) * progress;
+            players[playerIndex].shape.setPosition(currentPos);
+            
+            if (progress >= 1.0f) {
+                isAnimating = false;
+                checkGoalAttempt();
+                
+                // Cambiar de equipo si la animación ha terminado
+                if (!isAnimating) {
+                    endTurn();
+                }
+            }
+        };
+        
+        // Registrar la función de animación
+        animationFunctions.push_back(animateMovement);
+    }
+    
+    void checkGoalAttempt() {
+        Player& activePlayer = players[activePlayerIndex];
+        
+        if (activePlayer.hasBall) {
+            // Buscar portería adversaria
+            int enemyGoalRow = 3;
+            int enemyGoalCol = (activePlayer.team == 1) ? cols - 1 : 0;
+            
+            // Verificar si está cerca de la portería
+            int dx = abs(activePlayer.x - enemyGoalRow);
+            int dy = abs(activePlayer.y - enemyGoalCol);
+            
+            if (dx <= 1 && dy <= 1) {
+                // Intentar marcar gol
+                attemptGoal();
+            }
+        }
+    }
+    
+    void attemptGoal() {
+        // Animación de intento de gol
+        isAnimating = true;
+        animationClock.restart();
+        
+        statusText.setString("¡Intento de gol!");
+        
+        // Determinar si es gol (50% de probabilidad para simplificar)
+        bool isGoal = (rand() % 100) < 50;
+        
+        int scoringTeam = players[activePlayerIndex].team;
+        int defendingTeam = (scoringTeam == 1) ? 2 : 1;
+        
+        // Función de animación para el intento de gol
+        auto animateGoalAttempt = [this, isGoal, scoringTeam, defendingTeam]() {
+            float elapsed = animationClock.getElapsedTime().asSeconds();
+            
+            // Animar durante 2 segundos
+            if (elapsed < 2.0) {
+                if (elapsed < 1.0) {
+                    statusText.setFillColor(sf::Color(255, 255 * (1 - elapsed), 0));
+                    statusText.setCharacterSize(24 + static_cast<int>(12 * elapsed));
+                } else {
+                    statusText.setFillColor(sf::Color(255, 255 * (elapsed - 1.0), 0));
+                    statusText.setCharacterSize(36 - static_cast<int>(12 * (elapsed - 1.0)));
+                }
+            } else {
+                if (isGoal) {
+                    // Actualizar puntuación
+                    if (scoringTeam == 1) {
+                        goalsTeam1++;
+                    } else {
+                        goalsTeam2++;
+                    }
+                    
+                    statusText.setString("¡GOL del equipo " + std::to_string(scoringTeam) + "!");
+                    statusText.setFillColor(sf::Color::Yellow);
+                } else {
+                    statusText.setString("¡Atajada del equipo " + std::to_string(defendingTeam) + "!");
+                    statusText.setFillColor(sf::Color::White);
+                }
+                
+                // Verificar si el juego ha terminado
+                if (goalsTeam1 >= 5 || goalsTeam2 >= 5) {
+                    gameEnded = true;
+                }
+                
+                updateScoreText();
+                isAnimating = false;
+                endTurn();
+            }
+        };
+        
+        animationFunctions.push_back(animateGoalAttempt);
+    }
+    
+    void endTurn() {
+        // Cambiar al siguiente equipo
+        currentTeam = (currentTeam == 1) ? 2 : 1;
+        
+        // Encontrar primer jugador del equipo
+        activePlayerIndex = -1;
+        for (size_t i = 0; i < players.size(); ++i) {
+            if (players[i].team == currentTeam) {
+                activePlayerIndex = i;
+                break;
+            }
+        }
+        
+        // Incrementar contador de turnos
+        turnCount++;
+        
+        // Verificar fin de juego por turnos
+        if (turnCount >= 30) {
+            gameEnded = true;
+        }
+        
+        // Actualizar estado de juego
+        if (gameEnded) {
+            currentState = GameState::GAME_OVER;
+        }
+        
+        // Recuperar energía de jugadores
+        for (auto& player : players) {
+            if (player.team == currentTeam) {
+                player.energy = std::min(player.energy + 1, 3);
+            }
+        }
+        
+        // Actualizar texto de estado
+        updateStatusText();
+    }
+    
+    void updateStatusText() {
+        std::string status = "Turno " + std::to_string(turnCount) + " - Equipo " + 
+                            std::to_string(currentTeam) + " - " +
+                            players[activePlayerIndex].name;
+        statusText.setString(status);
+        statusText.setFillColor(sf::Color::White);
+        
+        updateScoreText();
+    }
+    
+    void updateScoreText() {
+        scoreText.setString("Equipo 1: " + std::to_string(goalsTeam1) + 
+                           " - Equipo 2: " + std::to_string(goalsTeam2));
+    }
+    
+    // Vector de funciones de animación
+    std::vector<std::function<void()>> animationFunctions;
+    
+    void update() {
+        // Procesar animaciones activas
+        if (isAnimating && !animationFunctions.empty()) {
+            for (auto& func : animationFunctions) {
+                func();
+            }
+            
+            // Limpiar animaciones terminadas
+            if (!isAnimating) {
+                animationFunctions.clear();
+            }
+        }
+    }
+    
+    void render() {
+        window.clear(sf::Color(50, 50, 50));
+        
+        // Dibujar fondo
+        window.draw(backgroundSprite);
+        
+        switch (currentState) {
+            case GameState::MENU:
+                renderMenu();
+                break;
+                
+            case GameState::INSTRUCTIONS:
+                renderInstructions();
+                break;
+                
+            case GameState::GAME:
+                renderGame();
+                break;
+                
+            case GameState::PAUSE:
+                renderPause();
+                break;
+                
+            case GameState::GAME_OVER:
+                renderGameOver();
+                break;
+                
+            default:
+                break;
+        }
+        
+        window.display();
+    }
+    
+    void renderMenu() {
+        window.draw(titleText);
+        
+        for (const auto& option : menuOptions) {
+            window.draw(option);
+        }
+    }
+    
+    void renderInstructions() {
+        sf::Text instructionsTitle;
+        instructionsTitle.setFont(font);
+        instructionsTitle.setString("Instrucciones");
+        instructionsTitle.setCharacterSize(36);
+        instructionsTitle.setFillColor(sf::Color::White);
+        instructionsTitle.setPosition(
+            WINDOW_WIDTH / 2 - instructionsTitle.getGlobalBounds().width / 2,
+            100
+        );
+        window.draw(instructionsTitle);
+        
+        sf::Text instructions;
+        instructions.setFont(font);
+        instructions.setString(
+            "1. Mueve tus jugadores por el tablero hexagonal\n"
+            "2. Usa cartas especiales para obtener ventajas\n"
+            "3. Intenta anotar goles acercándote a la portería contraria\n"
+            "4. El primer equipo en anotar 5 goles o el que tenga más goles\n"
+            "   después de 30 turnos gana\n\n"
+            "Haz clic para volver al menú"
+        );
+        instructions.setCharacterSize(24);
+        instructions.setFillColor(sf::Color::White);
+        instructions.setPosition(
+            WINDOW_WIDTH / 2 - instructions.getGlobalBounds().width / 2,
+            200
+        );
+        window.draw(instructions);
+    }
+    
+    void renderGame() {
+        // Dibujar tablero
+        for (int i = 0; i < rows; ++i) {
+            for (int j = 0; j < cols; ++j) {
+                window.draw(board[i][j]);
+            }
+        }
+        
+        // Dibujar marcadores de movimiento posible
+        if (isSelectingMove) {
+            for (const auto& move : possibleMoves) {
+                window.draw(move);
+            }
+        }
+        
+        // Dibujar jugadores
+        for (const auto& player : players) {
+            window.draw(player.shape);
+        }
+        
+        // Dibujar pelota
+        for (const auto& player : players) {
+            if (player.hasBall) {
+                sf::CircleShape ball;
+                ball.setRadius(8);
+                ball.setFillColor(sf::Color::White);
+                ball.setOrigin(ball.getRadius(), ball.getRadius());
+                ball.setPosition(player.shape.getPosition());
+                window.draw(ball);
+                break;
+            }
+        }
+         // Dibujar interfaz
+         window.draw(scoreText);
+         window.draw(statusText);
+         window.draw(pauseButton);
+         window.draw(pauseText);
+     }
+     
+     void renderPause() {
+         // Dibujar el juego de fondo con un overlay semitransparente
+         renderGame();
+         
+         sf::RectangleShape overlay;
+         overlay.setSize(sf::Vector2f(WINDOW_WIDTH, WINDOW_HEIGHT));
+         overlay.setFillColor(sf::Color(0, 0, 0, 150));
+         window.draw(overlay);
+         
+         sf::Text pauseTitle;
+         pauseTitle.setFont(font);
+         pauseTitle.setString("JUEGO PAUSADO");
+         pauseTitle.setCharacterSize(48);
+         pauseTitle.setFillColor(sf::Color::White);
+         pauseTitle.setPosition(
+             WINDOW_WIDTH / 2 - pauseTitle.getGlobalBounds().width / 2,
+             WINDOW_HEIGHT / 3
+         );
+         window.draw(pauseTitle);
+         
+         sf::Text resumeText;
+         resumeText.setFont(font);
+         resumeText.setString("Haz clic para continuar");
+         resumeText.setCharacterSize(24);
+         resumeText.setFillColor(sf::Color::White);
+         resumeText.setPosition(
+             WINDOW_WIDTH / 2 - resumeText.getGlobalBounds().width / 2,
+             WINDOW_HEIGHT / 2
+         );
+         window.draw(resumeText);
+     }
+     
+     void renderGameOver() {
+         // Dibujar el juego de fondo con un overlay semitransparente
+         renderGame();
+         
+         sf::RectangleShape overlay;
+         overlay.setSize(sf::Vector2f(WINDOW_WIDTH, WINDOW_HEIGHT));
+         overlay.setFillColor(sf::Color(0, 0, 0, 180));
+         window.draw(overlay);
+         
+         sf::Text gameOverTitle;
+         gameOverTitle.setFont(font);
+         gameOverTitle.setString("FIN DEL JUEGO");
+         gameOverTitle.setCharacterSize(48);
+         gameOverTitle.setFillColor(sf::Color::White);
+         gameOverTitle.setPosition(
+             WINDOW_WIDTH / 2 - gameOverTitle.getGlobalBounds().width / 2,
+             WINDOW_HEIGHT / 3
+         );
+         window.draw(gameOverTitle);
+         
+         // Determinar ganador
+         std::string resultText;
+         if (goalsTeam1 > goalsTeam2) {
+             resultText = "¡El Equipo 1 gana con " + std::to_string(goalsTeam1) + " goles!";
+         } else if (goalsTeam2 > goalsTeam1) {
+             resultText = "¡El Equipo 2 gana con " + std::to_string(goalsTeam2) + " goles!";
+         } else {
+             resultText = "¡Empate a " + std::to_string(goalsTeam1) + " goles!";
+         }
+         
+         sf::Text result;
+         result.setFont(font);
+         result.setString(resultText);
+         result.setCharacterSize(32);
+         result.setFillColor(sf::Color::Yellow);
+         result.setPosition(
+             WINDOW_WIDTH / 2 - result.getGlobalBounds().width / 2,
+             WINDOW_HEIGHT / 2
+         );
+         window.draw(result);
+         
+         sf::Text backToMenu;
+         backToMenu.setFont(font);
+         backToMenu.setString("Haz clic para volver al menú");
+         backToMenu.setCharacterSize(24);
+         backToMenu.setFillColor(sf::Color::White);
+         backToMenu.setPosition(
+             WINDOW_WIDTH / 2 - backToMenu.getGlobalBounds().width / 2,
+             WINDOW_HEIGHT / 2 + 80
+         );
+         window.draw(backToMenu);
+     }
+ };
+ 
+ // Función principal
+ int main() {
+     // Inicializar generador de números aleatorios
+     std::srand(static_cast<unsigned int>(std::time(nullptr)));
+     
+     // Crear y ejecutar el juego
+     FutbolTotal game;
+     game.run();
+     
+     return 0;
+ }
